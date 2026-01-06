@@ -7,7 +7,7 @@
 # Description: This script updates AdGuardHome to the latest version.
 # Thread: https://forum.gl-inet.com/t/how-to-update-adguard-home-testing/39398
 # Author: Admon
-SCRIPT_VERSION="2025.12.28.01"
+SCRIPT_VERSION="2026.01.06.01"
 SCRIPT_NAME="update-adguardhome.sh"
 UPDATE_URL="https://get.admon.me/adguard-update"
 AGH_TINY_URL="https://github.com/Admonstrator/glinet-adguard-updater/releases/latest/download"
@@ -430,15 +430,4 @@ preflight_check
     fi
 
 log "SUCCESS" "Script finished!"
-
-printf "\033[93mDo you want to see a little surprise? (y/N) \033[0m"
-read -r answer_surprise
-answer_surprise_lower=$(echo "$answer_surprise" | tr 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' 'abcdefghijklmnopqrstuvwxyz')
-if [ "$answer_surprise_lower" != "${answer_surprise_lower#[y]}" ]; then
-    wget -q -O /tmp/firework.sh "https://raw.githubusercontent.com/Admonstrator/glinet-tailscale-updater/main/firework.sh"
-    if [ -f "/tmp/firework.sh" ]; then
-        sh /tmp/firework.sh
-        rm /tmp/firework.sh
-    fi
-fi
 exit 0
