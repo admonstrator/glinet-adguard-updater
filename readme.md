@@ -58,7 +58,7 @@ Created by [Admon](https://forum.gl-inet.com/u/admon/) for the GL.iNet community
 Run the updater without cloning the repository:
 
 ```bash
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh ; sh update-adguardhome.sh
+wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh
 ```
 
 > ⚠️ **Important:** Do not run this script as a cron job! Manual execution is recommended.
@@ -83,7 +83,7 @@ The `update-adguardhome.sh` script supports the following arguments:
 Update to the latest stable release:
 
 ```bash
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh ; sh update-adguardhome.sh
+wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh
 ```
 
 ### Select a Specific Version
@@ -91,7 +91,7 @@ wget -q https://get.admon.me/adguard -O update-adguardhome.sh ; sh update-adguar
 Install a specific AdGuard Home version:
 
 ```bash
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh ; sh update-adguardhome.sh --select-release
+wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --select-release
 ```
 
 The script will display available releases for you to choose from.
@@ -101,7 +101,7 @@ The script will display available releases for you to choose from.
 For devices with limited free space (⚠️ use with caution):
 
 ```bash
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh ; sh update-adguardhome.sh --ignore-free-space
+wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --ignore-free-space
 ```
 
 > **⚠️ Warning:** This disables safety checks and backup creation. Could potentially break your router if there's not enough free space!
