@@ -36,10 +36,12 @@ Created by [Admon](https://forum.gl-inet.com/u/admon/) for the GL.iNet community
 - 🚀 **Automatic Updates** – Fetches and installs the latest AdGuard Home version
 - 📦 **Tiny Version Support** – Uses pre-compressed binaries optimized for GL.iNet routers (6 MB vs 32 MB)
 - 🎯 **Version Selection** – Install specific AdGuard Home versions
+- 🧪 **Testing Channel** – Optionally install pre-compressed AdGuard Home betas
 - 💾 **Query Logging Control** – Optionally enable query logging to file
 - 🌐 **DNS Routing Control** – Optionally send upstream DNS queries via WAN only, bypassing an active VPN
 - 🔄 **Persistence Support** – Make installations survive firmware upgrades
-- 🛡️ **Safe Backups** – Automatic backup of original files before updates
+- 🛡️ **Safe Backups** – Automatic backup of your configuration before every change
+- ↩️ **Restore** – Go back to the AdGuard Home version that shipped with your firmware
 - ⚡ **Flexible Options** – Multiple flags for customized installations
 
 ---
@@ -73,9 +75,13 @@ The `update-adguardhome.sh` script supports the following arguments:
 | Argument | Description |
 |----------|-------------|
 | `--ignore-free-space` | Bypasses the free space check and disables backup creation. Use with caution on low-storage devices! ⚠️ Not recommended - could break your router if there's insufficient space! |
-| `--select-release` | Displays available releases and lets you choose a specific version to install. |
-| `--beta` | ⚠️ Installs an AdGuard Home **beta**. Flint 4 only. |
-| `--beta-rollback` | Goes back to the version from before `--beta`. |
+| `--select-release` | Displays available stable releases and lets you choose a specific version to install. |
+| `--testing` | Installs the latest AdGuard Home **prerelease** (beta). ⚠️ Beta software - it can take DNS down for your whole network. |
+| `--restore` | Restores the AdGuard Home version that shipped with your firmware and removes the persistence entries of this script. |
+| `--force` | Answers every prompt automatically. Ideal for unattended runs. |
+| `--force-upgrade` | Installs even if that version is already installed. Useful for reinstalling the same version. |
+| `--log` | Shows timestamps in all log messages. Useful for debugging. |
+| `--help` | Displays the help message with all available arguments. |
 
 ---
 
@@ -99,6 +105,36 @@ wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adgua
 
 The script will display available releases for you to choose from.
 
+### Testing Versions
+
+Install the latest AdGuard Home prerelease:
+
+```bash
+wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --testing
+```
+
+> **⚠️ Warning:** Beta software. A broken AdGuard Home takes DNS down for your whole network. So far the betas have only been tested on the GL.iNet Flint 4 (GL-BE14000), but a build is provided for every supported architecture.
+
+To go back, run the script without any flag - it always installs the latest stable version - or use `--restore` for the version that shipped with your firmware.
+
+### Restore the Firmware Version
+
+Return to the AdGuard Home version that came with your firmware:
+
+```bash
+wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --restore
+```
+
+### Unattended Updates
+
+Run without any prompts:
+
+```bash
+wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --force
+```
+
+> **ℹ️ Note:** `--force` keeps the query log in RAM, leaves the DNS routing as it is and makes the installation permanent.
+
 ### Low Storage Devices
 
 For devices with limited free space (⚠️ use with caution):
@@ -108,18 +144,6 @@ wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adgua
 ```
 
 > **⚠️ Warning:** This disables safety checks and backup creation. Could potentially break your router if there's not enough free space!
-
-### Beta Versions
-
-> **⚠️ Warning:** Beta software. Only tested on the GL.iNet Flint 4 (GL-BE14000).
-
-```bash
-# Install an allowed beta (v1.0.0-b.1)
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --beta
-
-# Go back to the version from before the beta
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --beta-rollback
-```
 
 ---
 
@@ -188,6 +212,28 @@ cp /rom/etc/init.d/adguardhome /etc/init.d/adguardhome
 > sed -i '/procd_set_param stderr 1/a\    procd_set_param env GODEBUG=multipathtcp=0' /etc/init.d/adguardhome
 > ```
 
+### 🧪 Testing Channel
+
+Upstream publishes AdGuard Home betas as GitHub prereleases. This project builds them exactly like the stable versions - same architectures, same UPX compression, same checksums - and publishes them as a rolling **prerelease** in this repository.
+
+Because GitHub excludes prereleases from "latest", a beta never reaches the normal update path: a plain run of the script, the `--select-release` menu and the version badge above only ever see stable releases. You get a beta only by asking for it with `--testing`.
+
+```bash
+sh update-adguardhome.sh --testing
+```
+
+Your configuration is backed up to `/root/AdGuardHome_config_backup/` before anything is changed. If the new binary does not start, the script puts the previous one back automatically.
+
+> ⚠️ **Note:** AdGuard Home does not officially support downgrades. If it refuses to start after you go back from a beta, remove the configuration: `rm -rf /etc/AdGuardHome && /etc/init.d/adguardhome restart`
+
+### ↩️ Restore
+
+`--restore` brings back the AdGuard Home binary and init script that shipped with your firmware (from `/rom`), removes the persistence entries this script added and keeps your configuration. A config backup is created first.
+
+```bash
+sh update-adguardhome.sh --restore
+```
+
 ### 🔄 Persistence Support
 
 The script offers to make the installation persistent across firmware upgrades by:
@@ -201,7 +247,9 @@ The script offers to make the installation persistent across firmware upgrades b
 
 ## 🔙 Reverting Changes
 
-Since AdGuard Home is deeply integrated into GL.iNet firmware, reverting changes requires manual steps. Factory reset will **NOT** revert changes if you made the installation persistent!
+The script can do this for you: `sh update-adguardhome.sh --restore` restores the firmware version of AdGuard Home and removes the persistence entries. The manual steps below are for the cases it cannot cover - for example if `/rom` is not available on your device.
+
+Since AdGuard Home is deeply integrated into GL.iNet firmware, reverting changes manually requires several steps. Factory reset will **NOT** revert changes if you made the installation persistent!
 
 ### Manual Revert Steps
 
@@ -239,7 +287,15 @@ Since AdGuard Home is deeply integrated into GL.iNet firmware, reverting changes
 
 ### Restore from Backup
 
-A backup of the original files is located at `/root/AdGuardHome_backup.tar.gz` (if created).
+Configuration backups are located in `/root/AdGuardHome_config_backup/`, one timestamped archive per run. Older versions of this script wrote a single `/root/AdGuardHome_backup.tar.gz` instead.
+
+Restore one of them with:
+
+```bash
+/etc/init.d/adguardhome stop
+tar xzf /root/AdGuardHome_config_backup/<timestamp>.tar.gz -C /etc
+/etc/init.d/adguardhome start
+```
 
 If issues persist after manual revert, you can restore AdGuard Home to its original state by re-flashing the firmware.
 
