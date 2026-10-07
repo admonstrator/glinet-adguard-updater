@@ -256,6 +256,26 @@ disable_multipath_tcp() {
     log "INFO" "'procd_set_param env GODEBUG=multipathtcp=0' from /etc/init.d/adguardhome"
 }
 
+stop_adguardhome() {
+    log "INFO" "Stopping Adguard Home ..."
+    /etc/init.d/adguardhome stop 2 &>/dev/null
+    sleep 4
+    # Stop it by killing the process if it's still running
+    AGH_PID=$(pgrep AdGuardHome)
+    if [ -n "$AGH_PID" ]; then
+        killall AdGuardHome 2>/dev/null
+    fi
+}
+
+show_firmware_upgrade_warning() {
+    log "WARNING" "Please keep in mind:"
+    log "WARNING" "Upgrading the firmware will downgrade AdGuard Home!"
+    log "WARNING" "This will lead to non-working AdGuard Home."
+    log "WARNING" "Please disable AdGuard Home before upgrading the firmware."
+    log "WARNING" "After the firmware upgrade, you need to update AdGuard Home again."
+    log "WARNING" "It won't work otherwise."
+}
+
 configure_dns_routing() {
     # NOTE: 'explict_vpn' is the (misspelled) keyword used by the GL.iNet firmware
     if grep -q 'explict_vpn' /etc/init.d/adguardhome; then
@@ -416,15 +436,7 @@ preflight_check
             log "ERROR" "Please report this issue on the GL.iNET forum."
             exit 1
         fi
-        # Stop AdGuardHome
-        log "INFO" "Stopping Adguard Home ..."
-        /etc/init.d/adguardhome stop 2 &>/dev/null
-        sleep 4
-        # Stop it by killing the process if it's still running
-        AGH_PID=$(pgrep AdGuardHome)
-        if [ -n "$AGH_PID" ]; then
-            killall AdGuardHome 2>/dev/null
-        fi
+        stop_adguardhome
         # Remove old AdGuardHome
         log "INFO" "Moving AdGuardHome to /usr/bin ..."
         rm /usr/bin/AdGuardHome
@@ -467,12 +479,7 @@ preflight_check
     if [ "$answer_create_persistance" != "${answer_create_persistance#[Yy]}" ]; then
         : # Persistence was created, no warnings needed
     else
-        log "WARNING" "Please keep in mind:"
-        log "WARNING" "Upgrading the firmware will downgrade AdGuard Home!"
-        log "WARNING" "This will lead to non-working AdGuard Home."
-        log "WARNING" "Please disable AdGuard Home before upgrading the firmware."
-        log "WARNING" "After the firmware upgrade, you need to update AdGuard Home again."
-        log "WARNING" "It won't work otherwise."
+        show_firmware_upgrade_warning
     fi
 
 log "SUCCESS" "Script finished!"
