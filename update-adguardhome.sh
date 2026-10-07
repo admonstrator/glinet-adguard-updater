@@ -25,7 +25,13 @@ IGNORE_FREE_SPACE=0
 SELECT_RELEASE=0
 DNS_WAN_ONLY=0
 BETA_ROLLBACK=0
+BETA_ALLOWED_TAGS="v1.0.0-b.1"
+BETA_ASSET="AdGuardHome_linux_arm64.tar.gz"
+BETA_PERSIST_PHRASE="dangerously-persist-beta-software"
+BETA_TEMP_DIR="/tmp/AdGuardHomeBeta"
 BETA_BACKUP_DIR="/root/agh-beta-backup"
+# Overridable so the beta can be tested outside a Flint 4
+GL_MODEL_FILE="${GL_MODEL_FILE:-/proc/gl-hw-info/model}"
 
 # Function for backup
 backup() {
@@ -339,6 +345,74 @@ restart_and_verify() {
     /etc/init.d/adguardhome restart 2 >/dev/null 2>&1
     sleep 5
     pgrep AdGuardHome >/dev/null
+}
+
+preflight_check_beta() {
+    local model usage version
+    model=$(cat "$GL_MODEL_FILE" 2>/dev/null)
+    if [ "$model" != "be14000" ]; then
+        log "ERROR" "The beta is only supported on the GL.iNet Flint 4 (be14000). Detected: ${model:-unknown}"
+        exit 1
+    fi
+    usage=$(df -Ph /overlay 2>/dev/null | awk 'NR == 2{print $5+0}')
+    if [ -z "$usage" ] || [ "$usage" -ge 90 ]; then
+        log "WARNING" "Disk usage of /overlay is ${usage:-unknown}%. It should be below 90%."
+        confirm_or_exit "Do you want to continue anyway?"
+    fi
+    version=$(agh_version /usr/bin/AdGuardHome)
+    log "INFO" "Current AdGuard Home version: ${version:-unknown}"
+    case "$version" in
+        v0.107.7[4-9] | *-b.*) ;;
+        *)
+            log "WARNING" "The beta is only tested when the installed version is between v0.107.74 and v0.107.79."
+            confirm_or_exit "Do you want to continue anyway?"
+            ;;
+    esac
+}
+
+choose_beta_tag() {
+    local i=1 choice tag
+    for tag in $BETA_ALLOWED_TAGS; do
+        printf '\033[93m %s) %s\033[0m\n' "$i" "$tag"
+        i=$((i + 1))
+    done
+    printf '\033[93m Select a beta version by entering the corresponding number: \033[0m\n'
+    read -r choice
+    case "$choice" in
+        '' | 0* | *[!0-9]*) BETA_TAG="" ;;
+        *) BETA_TAG=$(echo "$BETA_ALLOWED_TAGS" | tr ' ' '\n' | sed -n "${choice}p") ;;
+    esac
+    if [ -z "$BETA_TAG" ]; then
+        log "ERROR" "Invalid choice. Exiting ..."
+        exit 1
+    fi
+    if [ "$BETA_TAG" = "$(agh_version /usr/bin/AdGuardHome)" ]; then
+        log "SUCCESS" "AdGuard Home $BETA_TAG is already installed."
+        exit 0
+    fi
+}
+
+download_beta() {
+    local url="https://github.com/AdguardTeam/AdGuardHome/releases/download/$BETA_TAG"
+    local expected
+    rm -rf "$BETA_TEMP_DIR"
+    mkdir -p "$BETA_TEMP_DIR"
+    log "INFO" "Downloading AdGuard Home $BETA_TAG ..."
+    if ! curl -f -L -s -o "$BETA_TEMP_DIR/$BETA_ASSET" "$url/$BETA_ASSET" ||
+        ! curl -f -L -s -o "$BETA_TEMP_DIR/checksums.txt" "$url/checksums.txt"; then
+        log "ERROR" "Download failed. Please check your internet connection."
+        exit 1
+    fi
+    expected=$(awk -v f="./$BETA_ASSET" '$2 == f {print $1}' "$BETA_TEMP_DIR/checksums.txt")
+    if [ -z "$expected" ] || [ "$expected" != "$(sha256sum "$BETA_TEMP_DIR/$BETA_ASSET" | awk '{print $1}')" ]; then
+        log "ERROR" "Checksum check failed for $BETA_ASSET. Exiting ..."
+        exit 1
+    fi
+    if ! tar -xzOf "$BETA_TEMP_DIR/$BETA_ASSET" ./AdGuardHome/AdGuardHome >"$BETA_TEMP_DIR/AdGuardHome" ||
+        [ ! -s "$BETA_TEMP_DIR/AdGuardHome" ]; then
+        log "ERROR" "Could not extract the AdGuard Home binary. Exiting ..."
+        exit 1
+    fi
 }
 
 rollback_beta() {
