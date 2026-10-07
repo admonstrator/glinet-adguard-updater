@@ -17,7 +17,7 @@ SCRIPT="${1:-update-adguardhome.sh}"
 WORK=$(mktemp -d)
 FAILED=0
 
-cleanup() { rm -rf "$WORK"; }
+cleanup() { rm -rf "${WORK:?}"; }
 trap cleanup EXIT
 
 pass() { printf 'ok   %s\n' "$1"; }
@@ -221,6 +221,129 @@ else
         pass "download_and_verify: a 404 fails instead of storing an error page"
     fi
 fi
+
+# ------------------------------------------------------------- install_agh
+# Updating the binary must not depend on whether AdGuard Home is running: it can
+# be switched off in the GL.iNet web interface. Earlier versions treated "no
+# process after the restart" as a failure, rolled back, and then reported the
+# rollback as failed too.
+extract agh_is_running
+extract stop_adguardhome
+extract restart_and_verify
+extract rollback_binary
+extract enable_querylog
+extract apply_dns_routing
+extract disable_multipath_tcp
+extract install_agh
+
+AGH_RESTART_TIMEOUT=2
+USER_WANTS_QUERYLOG="n"
+DNS_ROUTING_ACTION="none"
+BACKUP_PATH=""
+AGH_WAS_RUNNING=0
+AGH_BIN="$WORK/usr/bin/AdGuardHome"
+AGH_BIN_OLD="$WORK/usr/bin/AdGuardHome.old"
+AGH_CONFIG_DIR="$WORK/etc/AdGuardHome"
+AGH_INIT_SCRIPT="$WORK/init-adguardhome"
+TEMP_FILE="$WORK/AdGuardHomeNew"
+FAKE_RUNNING="never"
+
+# External commands the functions call, shadowed for the test
+pgrep() {
+    case "$FAKE_RUNNING" in
+    always) return 0 ;;
+    never) return 1 ;;
+    # "until_restart": running until the init script has been invoked
+    *) [ ! -f "$WORK/restarted" ] ;;
+    esac
+}
+killall() { :; }
+# Keeps the restart polling instant
+sleep() { :; }
+
+fake_binary() {
+    # $1 = path, $2 = version to report, or "broken" for a binary that fails
+    mkdir -p "$(dirname "$1")"
+    if [ "$2" = "broken" ]; then
+        printf '#!/bin/sh\nexit 1\n' > "$1"
+    else
+        printf '#!/bin/sh\necho "AdGuard Home, version %s"\n' "$2" > "$1"
+    fi
+    chmod +x "$1"
+}
+
+setup_install() {
+    # $1 = version of the installed binary, $2 = version of the new one
+    rm -rf "${WORK:?}/usr" "${WORK:?}/restarted" "${WORK:?}/etc"
+    fake_binary "$AGH_BIN" "$1"
+    fake_binary "$TEMP_FILE" "$2"
+    printf '#!/bin/sh\ntouch "%s/restarted"\nexit 0\n' "$WORK" > "$AGH_INIT_SCRIPT"
+    chmod +x "$AGH_INIT_SCRIPT"
+}
+
+# 1) AdGuard Home switched off, new binary fine -> the update must succeed
+FAKE_RUNNING="never"
+setup_install "v0.107.79" "v1.0.0-b.1"
+if ( install_agh >/dev/null 2>&1 ); then
+    if [ "$(agh_version "$AGH_BIN")" = "v1.0.0-b.1" ] && [ ! -f "$AGH_BIN_OLD" ]; then
+        pass "install_agh: updates the binary while AdGuard Home is not running"
+    else
+        fail "install_agh: wrong state: $(agh_version "$AGH_BIN"), .old present: $([ -f "$AGH_BIN_OLD" ] && echo yes || echo no)"
+    fi
+else
+    fail "install_agh: failed although only the service was not running"
+fi
+
+# 2) AdGuard Home switched off, new binary broken -> roll back, report failure
+FAKE_RUNNING="never"
+setup_install "v0.107.79" "broken"
+if ( install_agh >/dev/null 2>&1 ); then
+    fail "install_agh: reported success for a broken binary"
+elif [ "$(agh_version "$AGH_BIN")" = "v0.107.79" ]; then
+    pass "install_agh: rolls back a broken binary even with the service off"
+else
+    fail "install_agh: did not restore the previous binary: $(agh_version "$AGH_BIN")"
+fi
+
+# 3) AdGuard Home running, new binary fine -> update and keep it running
+FAKE_RUNNING="always"
+setup_install "v0.107.79" "v0.107.80"
+if ( install_agh >/dev/null 2>&1 ); then
+    if [ "$(agh_version "$AGH_BIN")" = "v0.107.80" ]; then
+        pass "install_agh: updates the binary while AdGuard Home is running"
+    else
+        fail "install_agh: wrong version after the update: $(agh_version "$AGH_BIN")"
+    fi
+else
+    fail "install_agh: failed although the service came back up"
+fi
+
+# 4) It was running and does not come back -> that is a real failure, roll back
+FAKE_RUNNING="until_restart"
+setup_install "v0.107.79" "v0.107.80"
+if ( install_agh >/dev/null 2>&1 ); then
+    fail "install_agh: reported success although AdGuard Home stayed down"
+elif [ "$(agh_version "$AGH_BIN")" = "v0.107.79" ]; then
+    pass "install_agh: rolls back when a running AdGuard Home does not come back"
+else
+    fail "install_agh: did not restore the previous binary: $(agh_version "$AGH_BIN")"
+fi
+
+# restart_and_verify on its own: a process that is gone again is not a success
+FAKE_RUNNING="never"
+if restart_and_verify >/dev/null 2>&1; then
+    fail "restart_and_verify: reported success without a running process"
+else
+    pass "restart_and_verify: fails when no process shows up"
+fi
+FAKE_RUNNING="always"
+if restart_and_verify >/dev/null 2>&1; then
+    pass "restart_and_verify: succeeds when the process is up and stays up"
+else
+    fail "restart_and_verify: failed although the process is running"
+fi
+
+unset -f pgrep killall sleep
 
 if [ "$FAILED" -eq 0 ]; then
     printf '\nall function tests passed\n'
