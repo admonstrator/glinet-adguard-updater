@@ -1,0 +1,353 @@
+name: Prebuild AdGuard Home prerelease for GL.iNet devices
+
+# Publishes a ROLLING GitHub PRE-RELEASE under the fixed tag "prerelease".
+#
+# `prerelease: true` plus `makeLatest: false` is what keeps this build invisible to
+#   - the stable pipeline   (build-adguardhome.yaml, reads /releases/latest)
+#   - the badge workflow    (update-badges.yml, reads /releases/latest)
+#   - the readme badge      (shields.io github/v/release excludes prereleases)
+#   - update-adguardhome.sh (default path reads releases/latest/download/)
+#
+# Only `update-adguardhome.sh --testing` reads this release, because it points at
+# releases/download/prerelease/ explicitly. Do not "clean up" those two inputs, and
+# never add ?include_prereleases to the readme badge.
+
+on:
+  schedule:
+    # Once a day, deliberately offset from the stable pipeline (30 9/12 * * *)
+    - cron: '17 11 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Beta tag to build, e.g. v1.0.0-b.1 (empty = highest upstream prerelease)'
+        required: false
+        default: ''
+      force:
+        description: 'Rebuild even if this tag is already published'
+        type: boolean
+        default: false
+      dry_run:
+        description: 'Publish a DRAFT under the tag prerelease-dry-run instead (safe)'
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: agh-prerelease-publish
+  cancel-in-progress: false
+
+env:
+  SOFTWARE_NAME: "AdGuard Home"
+  FILE_NAME: "AdGuardHome"
+  REPO: "AdguardTeam/AdGuardHome"
+  REPO_SMALL: "Admonstrator/glinet-adguard-updater"
+  PRERELEASE_TAG: "prerelease"
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      TAG: ${{ steps.tag.outputs.TAG }}
+      PLATFORMS: ${{ steps.tag.outputs.PLATFORMS }}
+      RELEASE_TAG: ${{ steps.mode.outputs.RELEASE_TAG }}
+      DRAFT: ${{ steps.mode.outputs.DRAFT }}
+      BUILD: ${{ steps.published.outputs.BUILD }}
+    steps:
+      - name: Resolve release mode
+        id: mode
+        run: |
+          set -euo pipefail
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            # A dry run never touches the live channel: different tag, draft only.
+            echo "RELEASE_TAG=${PRERELEASE_TAG}-dry-run" >> "$GITHUB_OUTPUT"
+            echo "DRAFT=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "RELEASE_TAG=${PRERELEASE_TAG}" >> "$GITHUB_OUTPUT"
+            echo "DRAFT=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Get specified or highest ${{ env.SOFTWARE_NAME }} beta tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [ -n "$INPUT_TAG" ]; then
+            selected_tag="$INPUT_TAG"
+            echo "Using tag from workflow_dispatch input: $selected_tag"
+          else
+            # Highest beta, not the most recent one: upstream runs two beta lines in
+            # parallel (v0.108.0-b.91 and v1.0.0-b.1) and sort -V orders
+            # v0.108.0-b.9 < v0.108.0-b.91 < v1.0.0-b.1 correctly.
+            selected_tag=$(
+              curl -fsSL \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/${REPO}/releases?per_page=100" \
+              | jq -r '.[] | select(.prerelease and (.draft | not)) | .tag_name' \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+-b\.[0-9]+$' \
+              | sort -V | tail -n 1
+            )
+            echo "Highest upstream prerelease: ${selected_tag:-<none>}"
+          fi
+
+          if [ -z "$selected_tag" ]; then
+            echo "::error::Could not determine a beta tag of ${REPO}"
+            exit 1
+          fi
+
+          # Hard guard: this pipeline must never publish a stable tag as a prerelease.
+          case "$selected_tag" in
+            v*.*.*-b.*) ;;
+            *)
+              echo "::error::Refusing non-beta tag '$selected_tag' in the prerelease pipeline"
+              exit 1
+              ;;
+          esac
+
+          echo "TAG=$selected_tag" >> "$GITHUB_OUTPUT"
+          # Same platforms as the stable pipeline, so --testing works on every device
+          # the default path supports.
+          echo 'PLATFORMS=["linux_amd64","linux_armv7","linux_arm64","linux_mipsle_softfloat","linux_mips_softfloat"]' >> "$GITHUB_OUTPUT"
+
+      - name: Verify upstream assets of ${{ steps.tag.outputs.TAG }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.TAG }}
+          PLATFORMS: ${{ steps.tag.outputs.PLATFORMS }}
+        run: |
+          set -euo pipefail
+          names=$(
+            curl -fsSL \
+              -H "Authorization: Bearer $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${REPO}/releases/tags/${TAG}" \
+            | jq -r '.assets[].name'
+          )
+          missing=0
+          for platform in $(printf '%s' "$PLATFORMS" | jq -r '.[]'); do
+            wanted="${FILE_NAME}_${platform}.tar.gz"
+            if ! printf '%s\n' "$names" | grep -qxF "$wanted"; then
+              echo "::error::Upstream ${TAG} is missing $wanted"
+              missing=1
+            fi
+          done
+          if ! printf '%s\n' "$names" | grep -qxF 'checksums.txt'; then
+            echo "::error::Upstream ${TAG} is missing checksums.txt"
+            missing=1
+          fi
+          [ "$missing" -eq 0 ]
+
+      - name: Check whether ${{ steps.tag.outputs.TAG }} is already published
+        id: published
+        env:
+          TAG: ${{ steps.tag.outputs.TAG }}
+          FORCE: ${{ inputs.force }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [ "$FORCE" = "true" ] || [ "$DRY_RUN" = "true" ]; then
+            echo "Forced run, building ${TAG}"
+            echo "BUILD=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # The release tag is always "prerelease", so comparing tags would always
+          # report "new". The published version.txt carries the upstream tag instead.
+          published=$(
+            curl -fsSL "https://github.com/${REPO_SMALL}/releases/download/${PRERELEASE_TAG}/version.txt" \
+            | tr -d '[:space:]' || true
+          )
+          echo "Currently published prerelease: ${published:-<none>}"
+          if [ "$published" = "$TAG" ]; then
+            echo "BUILD=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "BUILD=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    needs: check-versions
+    if: needs.check-versions.outputs.BUILD == 'true'
+    env:
+      TAG: ${{ needs.check-versions.outputs.TAG }}
+    strategy:
+      fail-fast: true
+      matrix:
+        platform: ${{ fromJSON(needs.check-versions.outputs.PLATFORMS) }}
+    steps:
+      # No actions/checkout of the AdGuard Home repository here: the binary comes
+      # from the release assets, the source tree is never used.
+      - name: Download and verify ${{ env.SOFTWARE_NAME }} ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          base="https://github.com/${REPO}/releases/download/${TAG}"
+          asset="${FILE_NAME}_${{ matrix.platform }}.tar.gz"
+          curl -fsSL -o "$asset" "$base/$asset"
+          curl -fsSL -o checksums.txt "$base/checksums.txt"
+          # Upstream format: "<sha256>  ./AdGuardHome_linux_arm64.tar.gz"
+          expected=$(awk -v f="./$asset" '$2 == f { print $1 }' checksums.txt)
+          if [ -z "$expected" ]; then
+            echo "::error::No checksum entry for $asset in the upstream checksums.txt"
+            exit 1
+          fi
+          actual=$(sha256sum "$asset" | awk '{ print $1 }')
+          if [ "$expected" != "$actual" ]; then
+            echo "::error::Checksum mismatch for $asset (expected $expected, got $actual)"
+            exit 1
+          fi
+          tar --to-stdout -xf "$asset" "./${FILE_NAME}/${FILE_NAME}" > "${FILE_NAME}-${{ matrix.platform }}"
+          [ -s "${FILE_NAME}-${{ matrix.platform }}" ]
+
+      - name: Upload built binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.FILE_NAME }}-${{ matrix.platform }}
+          path: ./${{ env.FILE_NAME }}-${{ matrix.platform }}
+          if-no-files-found: error
+
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    needs:
+      - check-versions
+      - build
+    if: needs.check-versions.outputs.BUILD == 'true'
+    env:
+      TAG: ${{ needs.check-versions.outputs.TAG }}
+      RELEASE_TAG: ${{ needs.check-versions.outputs.RELEASE_TAG }}
+    steps:
+      - name: Get UPX latest version
+        id: get-upx-version
+        run: |
+          set -euo pipefail
+          echo "UPX_VERSION=$(
+            curl -fsSL https://api.github.com/repos/upx/upx/releases/latest \
+            | jq -r '.tag_name' \
+            | cut -c 2-
+          )" >> "$GITHUB_ENV"
+
+      - name: Download UPX
+        run: |
+          set -euo pipefail
+          # Pinned to the resolved version instead of /releases/latest/download, so a
+          # release appearing between the two steps cannot mismatch the archive name.
+          curl -fsSL -O "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-amd64_linux.tar.xz"
+          tar --to-stdout -xf "upx-${UPX_VERSION}-amd64_linux.tar.xz" \
+            "upx-${UPX_VERSION}-amd64_linux/upx" > "${PWD}/upx"
+          chmod -v +x "${PWD}/upx"
+
+      - name: Download built binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ${{ env.FILE_NAME }}-*
+
+      - name: Moving files
+        run: |
+          set -euo pipefail
+          for dir in "${FILE_NAME}-"*; do
+            mv -v "${dir}" "${dir}.d"
+            mv -v "${dir}.d/${FILE_NAME}-"* .
+            rmdir -v "${dir}.d"
+          done
+          chmod -v +x "${FILE_NAME}-"*
+
+      - name: Compress Binary with UPX
+        run: |
+          set -euo pipefail
+          "${PWD}/upx" --lzma --best --no-progress "${FILE_NAME}-"*
+
+      - name: Verify compressed binaries
+        run: |
+          set -euo pipefail
+          # Integrity of every platform ...
+          "${PWD}/upx" -t "${FILE_NAME}-"*
+          # ... and a real run of the only platform this runner can execute. Upstream
+          # v1.0.0 is a rewrite, so "UPX produced a working binary" is worth proving.
+          version_output=$("./${FILE_NAME}-linux_amd64" --version)
+          echo "$version_output"
+          if ! printf '%s\n' "$version_output" | grep -qF "${TAG}"; then
+            echo "::error::The compressed amd64 binary does not report ${TAG}"
+            exit 1
+          fi
+
+      - name: Create checksums
+        run: |
+          set -euo pipefail
+          # Same format as the stable release (no ./ prefix), so update-adguardhome.sh
+          # can verify both channels with one code path.
+          sha256sum "${FILE_NAME}-"* > "checksums.txt"
+          cat checksums.txt
+
+      - name: Create version file
+        run: |
+          set -euo pipefail
+          # Full upstream tag including the -b.N suffix: the script compares it as is.
+          echo "${TAG}" > "version.txt"
+
+      - name: Delete previous ${{ env.RELEASE_TAG }} release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if gh release view "${RELEASE_TAG}" --repo "${REPO_SMALL}" >/dev/null 2>&1; then
+            echo "Deleting existing ${RELEASE_TAG} release"
+            gh release delete "${RELEASE_TAG}" --repo "${REPO_SMALL}" --yes
+          fi
+          gh api -X DELETE "repos/${REPO_SMALL}/git/refs/tags/${RELEASE_TAG}" >/dev/null 2>&1 \
+            || echo "No ${RELEASE_TAG} git ref to delete"
+
+      - name: Create prerelease
+        uses: ncipollo/release-action@v1
+        with:
+          name: Small ${{ env.SOFTWARE_NAME }} ${{ env.TAG }} (prerelease)
+          tag: ${{ env.RELEASE_TAG }}
+          commit: ${{ github.sha }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          # Both of these keep the build out of the stable update path. See the
+          # comment at the top of this file before changing them.
+          prerelease: true
+          makeLatest: false
+          draft: ${{ needs.check-versions.outputs.DRAFT }}
+          allowUpdates: true
+          removeArtifacts: true
+          replacesArtifacts: true
+          artifactErrorsFailBuild: true
+          artifacts: |
+            ${{ env.FILE_NAME }}-*
+            checksums.txt
+            version.txt
+          body: |
+            ## ⚠️ Prerelease - testing version
+
+            Small ${{ env.SOFTWARE_NAME }} build of the upstream **prerelease**
+            `${{ env.TAG }}`.
+
+            **Use at your own risk!** A broken AdGuard Home takes DNS down for your
+            whole network. Binaries are built for every architecture the stable
+            release supports, but so far this has only been tested on the
+            GL.iNet Flint 4 (GL-BE14000).
+
+            To install it, run the update script with the `--testing` flag:
+
+            ```bash
+            wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --testing
+            ```
+
+            To go back, run the script without any flag (installs the latest stable
+            version) or use `--restore` to return to the firmware version.
+
+            For a complete changelog go to https://github.com/${{ env.REPO }}/releases/tag/${{ env.TAG }}
+
+            This release was created by:
+
+            * Fetching a binary from upstream and verifying its SHA-256 checksum
+            * Compressing the binary with UPX
+            * Verifying the compressed binaries (`upx -t`, plus a version check on amd64)
