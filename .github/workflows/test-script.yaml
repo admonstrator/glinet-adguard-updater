@@ -1,0 +1,144 @@
+name: Test Update Script
+
+on:
+  push:
+    branches: [ main, develop ]
+    paths:
+      - 'update-adguardhome.sh'
+      - 'tests/**'
+      - '.github/workflows/test-script.yaml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'update-adguardhome.sh'
+      - 'tests/**'
+      - '.github/workflows/test-script.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: ShellCheck Analysis
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run ShellCheck
+        uses: ludeeus/action-shellcheck@master
+        with:
+          scandir: '.'
+          format: gcc
+          severity: warning
+          additional_files: 'update-adguardhome.sh'
+
+  syntax-check:
+    name: Syntax Validation
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        shell: [dash, bash, sh]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install shells
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y dash
+
+      - name: Check syntax with ${{ matrix.shell }}
+        run: |
+          ${{ matrix.shell }} -n update-adguardhome.sh
+          ${{ matrix.shell }} -n tests/test-functions.sh
+
+  flag-tests:
+    name: Flag Parsing Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test --help flag
+        run: |
+          output=$(sh update-adguardhome.sh --help 2>&1)
+          echo "$output" | grep -q "Usage:" || exit 1
+          echo "$output" | grep -q -- "--log" || exit 1
+          echo "$output" | grep -q -- "--testing" || exit 1
+          echo "$output" | grep -q -- "--restore" || exit 1
+          echo "✓ --help flag works correctly"
+
+      - name: Test invalid flag
+        run: |
+          output=$(sh update-adguardhome.sh --invalid-flag 2>&1 || true)
+          echo "$output" | grep -q "Unknown argument" || exit 1
+          # An unknown flag must not be silently ignored
+          sh update-adguardhome.sh --invalid-flag >/dev/null 2>&1 && exit 1
+          echo "✓ Invalid flag detection works"
+
+      - name: Test mutually exclusive flags
+        run: |
+          output=$(sh update-adguardhome.sh --restore --testing 2>&1 || true)
+          echo "$output" | grep -q -- "--restore cannot be combined" || exit 1
+          output=$(sh update-adguardhome.sh --testing --select-release 2>&1 || true)
+          echo "$output" | grep -q "cannot be combined" || exit 1
+          echo "✓ Mutually exclusive flags are rejected"
+
+      - name: Test version output
+        run: |
+          version=$(grep '^SCRIPT_VERSION=' update-adguardhome.sh | head -1 | cut -d'"' -f2)
+          echo "Script version: $version"
+          printf '%s\n' "$version" | grep -qE '^[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]{2}$' || exit 1
+          echo "✓ Version format is correct"
+
+  posix-compliance:
+    name: POSIX Compliance Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check for bash-specific syntax
+        run: |
+          echo "Checking for common bashisms..."
+
+          # == in test conditions (should be =)
+          if grep -n '\[ .*==.*\]' update-adguardhome.sh; then
+            echo "❌ Found == in test condition (use = for POSIX compliance)"
+            exit 1
+          fi
+
+          # [[ ]] (bash-specific)
+          if grep -n '\[\[' update-adguardhome.sh; then
+            echo "❌ Found [[ ]] (use [ ] for POSIX compliance)"
+            exit 1
+          fi
+
+          # &> redirection: busybox ash can read this as a background job
+          if grep -n '&>' update-adguardhome.sh; then
+            echo "❌ Found &> redirection (use >/dev/null 2>&1 instead)"
+            exit 1
+          fi
+
+          # read without -r mangles backslashes
+          if grep -nE '(^|[^-])\bread +[a-zA-Z_]' update-adguardhome.sh; then
+            echo "❌ Found read without -r"
+            exit 1
+          fi
+
+          echo "✓ No bashisms detected"
+
+  function-tests:
+    name: Function Regression Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Run function tests
+        # Pulls single functions out of the script and runs them against
+        # temporary files, so no router is needed. The network-backed cases
+        # verify that a 404 fails and that --select-release never offers a
+        # prerelease.
+        run: sh tests/test-functions.sh update-adguardhome.sh
