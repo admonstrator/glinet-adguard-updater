@@ -74,6 +74,8 @@ The `update-adguardhome.sh` script supports the following arguments:
 |----------|-------------|
 | `--ignore-free-space` | Bypasses the free space check and disables backup creation. Use with caution on low-storage devices! ⚠️ Not recommended - could break your router if there's insufficient space! |
 | `--select-release` | Displays available releases and lets you choose a specific version to install. |
+| `--beta` | ⚠️ Installs an AdGuard Home **beta**. Flint 4 only. |
+| `--beta-rollback` | Goes back to the version from before `--beta`. |
 
 ---
 
@@ -106,6 +108,18 @@ wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adgua
 ```
 
 > **⚠️ Warning:** This disables safety checks and backup creation. Could potentially break your router if there's not enough free space!
+
+### Beta Versions
+
+> **⚠️ Warning:** Beta software. Only tested on the GL.iNet Flint 4 (GL-BE14000).
+
+```bash
+# Install an allowed beta (v1.0.0-b.1)
+wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --beta
+
+# Go back to the version from before the beta
+wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --beta-rollback
+```
 
 ---
 
