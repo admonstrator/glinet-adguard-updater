@@ -12,7 +12,7 @@ SCRIPT_NAME="update-adguardhome.sh"
 UPDATE_URL="https://get.admon.me/adguard-update"
 AGH_TINY_URL="https://github.com/Admonstrator/glinet-adguard-updater/releases/latest/download"
 #
-# Usage: ./update-adguardhome.sh [--ignore-free-space] [--select-release]
+# Usage: ./update-adguardhome.sh [--ignore-free-space] [--select-release] [--beta-rollback]
 # Warning: This script might potentially harm your router. Use it at your own risk.
 #
 # Populate variables
@@ -24,6 +24,8 @@ INFO='\033[0m' # No Color
 IGNORE_FREE_SPACE=0
 SELECT_RELEASE=0
 DNS_WAN_ONLY=0
+BETA_ROLLBACK=0
+BETA_BACKUP_DIR="/root/agh-beta-backup"
 
 # Function for backup
 backup() {
@@ -314,6 +316,54 @@ configure_dns_routing() {
     fi
 }
 
+agh_version() {
+    "$1" --version 2>/dev/null | awk '{print $NF}'
+}
+
+is_beta_installed() {
+    agh_version /usr/bin/AdGuardHome | grep -q -- '-b\.'
+}
+
+confirm_or_exit() {
+    local answer
+    log "WARNING" "$1 (y/N)"
+    read -r answer
+    if [ "$answer" = "${answer#[Yy]}" ]; then
+        log "ERROR" "Ok, see you next time!"
+        exit 0
+    fi
+}
+
+restart_and_verify() {
+    log "INFO" "Restarting AdGuard Home ..."
+    /etc/init.d/adguardhome restart 2 >/dev/null 2>&1
+    sleep 5
+    pgrep AdGuardHome >/dev/null
+}
+
+rollback_beta() {
+    local version
+    if [ ! -f "$BETA_BACKUP_DIR/AdGuardHome" ]; then
+        log "ERROR" "No beta backup found in $BETA_BACKUP_DIR. Nothing to roll back."
+        exit 1
+    fi
+    version=$(agh_version "$BETA_BACKUP_DIR/AdGuardHome")
+    if [ "$version" = "$(agh_version /usr/bin/AdGuardHome)" ]; then
+        log "SUCCESS" "AdGuard Home $version is already installed. Nothing to roll back."
+        exit 0
+    fi
+    confirm_or_exit "Do you want to roll back from $(agh_version /usr/bin/AdGuardHome) to $version?"
+    stop_adguardhome
+    cp "$BETA_BACKUP_DIR/AdGuardHome" /usr/bin/AdGuardHome
+    chmod +x /usr/bin/AdGuardHome
+    if ! restart_and_verify; then
+        log "ERROR" "AdGuard Home $version is not running."
+        log "ERROR" "Your config from before the beta is in $BETA_BACKUP_DIR/config.tar.gz"
+        exit 1
+    fi
+    log "SUCCESS" "AdGuard Home has been rolled back to version $version"
+}
+
 # Function to choose a GitHub release label
 choose_release_label() {
     log "INFO" "Fetching available release labels..."
@@ -372,14 +422,31 @@ for arg in "$@"; do
             SELECT_RELEASE=1
             shift
             ;;
+        --beta-rollback)
+            BETA_ROLLBACK=1
+            shift
+            ;;
         *)
             ;;
     esac
 done
 
 invoke_intro
+
+if [ "$BETA_ROLLBACK" -eq 1 ]; then
+    rollback_beta
+    log "SUCCESS" "Script finished!"
+    exit 0
+fi
+
 invoke_update "$@"
 preflight_check
+
+if is_beta_installed; then
+    log "ERROR" "You are running an AdGuard Home beta: $(agh_version /usr/bin/AdGuardHome)"
+    log "ERROR" "Use --beta-rollback to go back to your previous version first."
+    exit 1
+fi
 
     if [ "$SELECT_RELEASE" -eq 1 ]; then
         choose_release_label
