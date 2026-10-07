@@ -17,7 +17,7 @@ SCRIPT="${1:-update-adguardhome.sh}"
 WORK=$(mktemp -d)
 FAILED=0
 
-cleanup() { rm -rf "$WORK"; }
+cleanup() { rm -rf "${WORK:?}"; }
 trap cleanup EXIT
 
 pass() { printf 'ok   %s\n' "$1"; }
@@ -274,7 +274,7 @@ fake_binary() {
 
 setup_install() {
     # $1 = version of the installed binary, $2 = version of the new one
-    rm -rf "$WORK/usr" "$WORK/restarted" "$WORK/etc"
+    rm -rf "${WORK:?}/usr" "${WORK:?}/restarted" "${WORK:?}/etc"
     fake_binary "$AGH_BIN" "$1"
     fake_binary "$TEMP_FILE" "$2"
     printf '#!/bin/sh\ntouch "%s/restarted"\nexit 0\n' "$WORK" > "$AGH_INIT_SCRIPT"
