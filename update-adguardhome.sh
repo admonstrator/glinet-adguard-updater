@@ -8,7 +8,7 @@
 # Description: This script updates AdGuardHome to the latest version.
 # Thread: https://forum.gl-inet.com/t/how-to-update-adguard-home-testing/39398
 # Author: Admon
-SCRIPT_VERSION="2026.10.07.02"
+SCRIPT_VERSION="2026.10.07.03"
 SCRIPT_NAME="update-adguardhome.sh"
 UPDATE_URL="https://get.admon.me/adguard-update"
 #
@@ -39,6 +39,7 @@ CHANNEL_NAME="stable"
 AGH_VERSION_NEW=""
 AGH_VERSION_OLD=""
 BACKUP_PATH=""
+AGH_WAS_RUNNING=0
 DNS_WAN_ONLY=0
 DNS_ROUTING_ACTION="none"
 USER_WANTS_QUERYLOG="n"
@@ -56,6 +57,9 @@ RC_LOCAL="/etc/rc.local"
 SYSUPGRADE_CONF="/etc/sysupgrade.conf"
 TEMP_FILE="/tmp/AdGuardHomeNew"
 TEMP_CHECKSUMS="/tmp/AdGuardHomeNew.sha256"
+# Seconds to wait for AdGuard Home to come up after a restart. A fixed sleep
+# is not enough on slow devices like the GL-MT1300.
+AGH_RESTART_TIMEOUT="${AGH_RESTART_TIMEOUT:-15}"
 
 # Constants - Detection sources, overridable so the detection can be tested
 # without a router
@@ -119,6 +123,10 @@ log() {
 agh_version() {
     # Prints the version of an AdGuard Home binary, e.g. v0.107.79 or v1.0.0-b.1
     "$1" --version 2>/dev/null | awk '{print $NF}'
+}
+
+agh_is_running() {
+    pgrep AdGuardHome >/dev/null 2>&1
 }
 
 is_testing_version() {
@@ -420,10 +428,49 @@ stop_adguardhome() {
 }
 
 restart_and_verify() {
+    # Restarts AdGuard Home and waits for it to come up. A fixed sleep is too
+    # short on slow devices, and a process that dies right after starting does
+    # not count as a success.
+    local waited=0
     log "INFO" "Restarting AdGuard Home ..."
     "$AGH_INIT_SCRIPT" restart >/dev/null 2>&1
-    sleep 5
-    pgrep AdGuardHome >/dev/null
+    while [ "$waited" -lt "$AGH_RESTART_TIMEOUT" ]; do
+        sleep 1
+        waited=$((waited + 1))
+        if agh_is_running; then
+            sleep 2
+            if agh_is_running; then
+                return 0
+            fi
+            return 1
+        fi
+    done
+    return 1
+}
+
+rollback_binary() {
+    # Puts the previous binary back. It is only restarted when AdGuard Home was
+    # running before, so a switched off AdGuard Home stays switched off.
+    if [ ! -f "$AGH_BIN_OLD" ]; then
+        log "ERROR" "There is no previous binary to roll back to."
+        return 1
+    fi
+    log "INFO" "Rolling back to the previous binary ..."
+    if ! mv "$AGH_BIN_OLD" "$AGH_BIN"; then
+        log "ERROR" "Could not restore the previous binary from $AGH_BIN_OLD."
+        return 1
+    fi
+    chmod +x "$AGH_BIN"
+    if [ "$AGH_WAS_RUNNING" -eq 0 ]; then
+        log "SUCCESS" "Rolled back to AdGuard Home $(agh_version "$AGH_BIN")"
+        return 0
+    fi
+    if restart_and_verify; then
+        log "SUCCESS" "Rolled back to AdGuard Home $(agh_version "$AGH_BIN")"
+        return 0
+    fi
+    log "ERROR" "The rollback did not bring AdGuard Home up either."
+    return 1
 }
 
 enable_querylog() {
@@ -479,6 +526,16 @@ disable_multipath_tcp() {
 install_agh() {
     local installed_version
 
+    # Whether AdGuard Home runs is a different question from whether its binary
+    # can be updated: it can be switched off in the GL.iNet web interface. The
+    # state found here decides what counts as a failure further down.
+    AGH_WAS_RUNNING=0
+    if agh_is_running; then
+        AGH_WAS_RUNNING=1
+    else
+        log "INFO" "AdGuard Home is not running at the moment."
+    fi
+
     stop_adguardhome
 
     log "INFO" "Installing the new binary in $AGH_BIN ..."
@@ -489,11 +546,8 @@ install_agh() {
         exit 1
     fi
     if ! mv "$TEMP_FILE" "$AGH_BIN"; then
-        log "ERROR" "Could not install the new binary. Restoring the previous one ..."
-        if [ -f "$AGH_BIN_OLD" ]; then
-            mv "$AGH_BIN_OLD" "$AGH_BIN"
-            restart_and_verify >/dev/null 2>&1
-        fi
+        log "ERROR" "Could not install the new binary."
+        rollback_binary
         exit 1
     fi
     chmod +x "$AGH_BIN"
@@ -503,19 +557,12 @@ install_agh() {
     apply_dns_routing
     disable_multipath_tcp
 
+    # Does the new binary work? That is a question about the binary, so it is
+    # answered without the service and holds while AdGuard Home is switched off.
     installed_version=$(agh_version "$AGH_BIN")
-    if [ -z "$installed_version" ] || ! restart_and_verify; then
-        log "ERROR" "AdGuard Home does not run after the update."
-        if [ -f "$AGH_BIN_OLD" ]; then
-            log "INFO" "Rolling back to the previous binary ..."
-            mv "$AGH_BIN_OLD" "$AGH_BIN"
-            chmod +x "$AGH_BIN"
-            if restart_and_verify; then
-                log "SUCCESS" "Rolled back to AdGuard Home $(agh_version "$AGH_BIN")"
-            else
-                log "ERROR" "The rollback did not bring AdGuard Home up either."
-            fi
-        fi
+    if [ -z "$installed_version" ]; then
+        log "ERROR" "The new binary does not work: it does not report a version."
+        rollback_binary
         if [ -n "$BACKUP_PATH" ]; then
             log "INFO" "Your config backup is here: $BACKUP_PATH"
         fi
@@ -523,8 +570,30 @@ install_agh() {
         exit 1
     fi
 
-    rm -f "$AGH_BIN_OLD"
-    log "SUCCESS" "AdGuard Home has been updated to version $installed_version"
+    if restart_and_verify; then
+        rm -f "$AGH_BIN_OLD"
+        log "SUCCESS" "AdGuard Home has been updated to version $installed_version"
+        return 0
+    fi
+
+    if [ "$AGH_WAS_RUNNING" -eq 0 ]; then
+        # It was not running before the update either, so there is nothing that
+        # a rollback could improve: the binary is updated, which is the job.
+        rm -f "$AGH_BIN_OLD"
+        log "SUCCESS" "AdGuard Home has been updated to version $installed_version"
+        log "INFO" "AdGuard Home is not running, just as before the update."
+        log "INFO" "That is expected while it is switched off; enable it in the"
+        log "INFO" "GL.iNet web interface whenever you want to use it."
+        return 0
+    fi
+
+    log "ERROR" "AdGuard Home was running before the update, but does not run now."
+    rollback_binary
+    if [ -n "$BACKUP_PATH" ]; then
+        log "INFO" "Your config backup is here: $BACKUP_PATH"
+    fi
+    log "ERROR" "Please report this issue on the GL.iNet forum."
+    exit 1
 }
 
 create_persistance_script() {
@@ -614,11 +683,25 @@ restore() {
     confirm_or_exit "Do you want to continue?"
 
     backup || exit 1
+
+    AGH_WAS_RUNNING=0
+    if agh_is_running; then
+        AGH_WAS_RUNNING=1
+    else
+        log "INFO" "AdGuard Home is not running at the moment."
+    fi
     stop_adguardhome
 
     log "INFO" "Restoring $AGH_BIN from /rom ..."
+    rm -f "$AGH_BIN_OLD"
+    if [ -f "$AGH_BIN" ] && ! mv "$AGH_BIN" "$AGH_BIN_OLD"; then
+        log "ERROR" "Could not move the current binary out of the way."
+        log "ERROR" "Nothing has been changed on your router."
+        exit 1
+    fi
     if ! cp "$rom_binary" "$AGH_BIN"; then
         log "ERROR" "Could not restore the binary from /rom."
+        rollback_binary
         exit 1
     fi
     chmod +x "$AGH_BIN"
@@ -638,14 +721,26 @@ restore() {
     remove_lines "$SYSUPGRADE_CONF" "$AGH_CONFIG_DIR"
     remove_lines "$SYSUPGRADE_CONF" "$LEGACY_BACKUP_FILE"
 
-    if ! restart_and_verify; then
-        log "ERROR" "AdGuard Home does not run after the restore."
+    if [ -z "$(agh_version "$AGH_BIN")" ]; then
+        log "ERROR" "The restored binary does not report a version."
+        rollback_binary
+        log "ERROR" "Your config backup is here: ${BACKUP_PATH:-$BACKUP_DIR}"
+        exit 1
+    fi
+
+    if ! restart_and_verify && [ "$AGH_WAS_RUNNING" -eq 1 ]; then
+        log "ERROR" "AdGuard Home was running before the restore, but does not run now."
+        rollback_binary
         log "ERROR" "Your config backup is here: ${BACKUP_PATH:-$BACKUP_DIR}"
         log "ERROR" "Please report this issue on the GL.iNet forum."
         exit 1
     fi
 
+    rm -f "$AGH_BIN_OLD"
     log "SUCCESS" "AdGuard Home has been restored to version $(agh_version "$AGH_BIN")"
+    if ! agh_is_running; then
+        log "INFO" "AdGuard Home is not running, just as before the restore."
+    fi
     log "INFO" "Re-enable AdGuard Home in the GL.iNet web interface if it is switched off."
 }
 
