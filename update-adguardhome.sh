@@ -12,7 +12,7 @@ SCRIPT_NAME="update-adguardhome.sh"
 UPDATE_URL="https://get.admon.me/adguard-update"
 AGH_TINY_URL="https://github.com/Admonstrator/glinet-adguard-updater/releases/latest/download"
 #
-# Usage: ./update-adguardhome.sh [--ignore-free-space] [--select-release] [--beta-rollback]
+# Usage: ./update-adguardhome.sh [--ignore-free-space] [--select-release] [--beta] [--beta-rollback]
 # Warning: This script might potentially harm your router. Use it at your own risk.
 #
 # Populate variables
@@ -24,6 +24,7 @@ INFO='\033[0m' # No Color
 IGNORE_FREE_SPACE=0
 SELECT_RELEASE=0
 DNS_WAN_ONLY=0
+BETA=0
 BETA_ROLLBACK=0
 BETA_ALLOWED_TAGS="v1.0.0-b.1"
 BETA_ASSET="AdGuardHome_linux_arm64.tar.gz"
@@ -415,6 +416,74 @@ download_beta() {
     fi
 }
 
+backup_for_beta() {
+    # A beta is already running: the backup still holds the stable version, keep it
+    if is_beta_installed && [ -f "$BETA_BACKUP_DIR/AdGuardHome" ]; then
+        log "INFO" "Keeping existing backup in $BETA_BACKUP_DIR"
+        return 0
+    fi
+    log "INFO" "Creating backup in $BETA_BACKUP_DIR ..."
+    rm -rf "$BETA_BACKUP_DIR"
+    mkdir -p "$BETA_BACKUP_DIR"
+    if ! tar czf "$BETA_BACKUP_DIR/config.tar.gz" -C /etc AdGuardHome ||
+        ! cp /usr/bin/AdGuardHome "$BETA_BACKUP_DIR/AdGuardHome"; then
+        log "ERROR" "Backup failed. Nothing was changed. Exiting ..."
+        rm -rf "$BETA_BACKUP_DIR"
+        exit 1
+    fi
+}
+
+install_beta() {
+    stop_adguardhome
+    if ! cp "$BETA_TEMP_DIR/AdGuardHome" /usr/bin/AdGuardHome; then
+        log "ERROR" "Could not install the binary. Run this script with --beta-rollback to go back."
+        exit 1
+    fi
+    chmod +x /usr/bin/AdGuardHome
+    rm -rf "$BETA_TEMP_DIR"
+    # Must run before disable_multipath_tcp, as restoring copies the stock init script
+    configure_dns_routing
+    disable_multipath_tcp
+    if ! restart_and_verify; then
+        log "ERROR" "AdGuard Home $BETA_TAG is not running. Run this script with --beta-rollback to go back."
+        exit 1
+    fi
+    log "SUCCESS" "AdGuard Home has been updated to version $BETA_TAG"
+}
+
+persist_beta() {
+    local answer
+    log "WARNING" "Persistence keeps this BETA after a firmware upgrade. If it breaks, you might need a factory reset."
+    log "WARNING" "Type $BETA_PERSIST_PHRASE to make it permanent, or press Enter to skip:"
+    read -r answer
+    if [ "$answer" != "$BETA_PERSIST_PHRASE" ]; then
+        log "INFO" "Ok, skipping persistence ..."
+        show_firmware_upgrade_warning
+        return 0
+    fi
+    create_persistance_script
+    upgrade_persistance
+    if ! grep -q "$BETA_BACKUP_DIR" /etc/sysupgrade.conf; then
+        echo "$BETA_BACKUP_DIR" >>/etc/sysupgrade.conf
+    fi
+    /usr/bin/enable-adguardhome-update-check
+}
+
+update_beta() {
+    log "WARNING" "BETA SOFTWARE: a broken beta can stop DNS for your whole network."
+    log "WARNING" "Only tested on the GL.iNet Flint 4 (GL-BE14000)."
+    confirm_or_exit "Do you want to continue?"
+    preflight_check_beta
+    choose_beta_tag
+    download_beta
+    backup_for_beta
+    install_beta
+    log "WARNING" "Storing the query log on flash is not tested with the beta."
+    enable_querylog
+    persist_beta
+    log "INFO" "To go back, run this script with --beta-rollback"
+}
+
 rollback_beta() {
     local version
     if [ ! -f "$BETA_BACKUP_DIR/AdGuardHome" ]; then
@@ -496,6 +565,10 @@ for arg in "$@"; do
             SELECT_RELEASE=1
             shift
             ;;
+        --beta)
+            BETA=1
+            shift
+            ;;
         --beta-rollback)
             BETA_ROLLBACK=1
             shift
@@ -505,6 +578,11 @@ for arg in "$@"; do
     esac
 done
 
+if [ $((BETA + BETA_ROLLBACK)) -gt 0 ] && [ $((BETA + BETA_ROLLBACK + SELECT_RELEASE + IGNORE_FREE_SPACE)) -gt 1 ]; then
+    log "ERROR" "--beta and --beta-rollback cannot be combined with other options."
+    exit 1
+fi
+
 invoke_intro
 
 if [ "$BETA_ROLLBACK" -eq 1 ]; then
@@ -513,8 +591,17 @@ if [ "$BETA_ROLLBACK" -eq 1 ]; then
     exit 0
 fi
 
-invoke_update "$@"
+# The upstream script ignores --beta and would run a stable update instead.
+if [ "$BETA" -eq 0 ]; then
+    invoke_update "$@"
+fi
 preflight_check
+
+if [ "$BETA" -eq 1 ]; then
+    update_beta
+    log "SUCCESS" "Script finished!"
+    exit 0
+fi
 
 if is_beta_installed; then
     log "ERROR" "You are running an AdGuard Home beta: $(agh_version /usr/bin/AdGuardHome)"
