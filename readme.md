@@ -61,7 +61,7 @@ Created by [Admon](https://forum.gl-inet.com/u/admon/) for the GL.iNet community
 Run the updater without cloning the repository:
 
 ```bash
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh
+wget -q https://app.gl-i.net/adguard -O update-adguardhome.sh && sh update-adguardhome.sh
 ```
 
 > ⚠️ **Important:** Do not run this script as a cron job! Manual execution is recommended.
@@ -92,7 +92,7 @@ The `update-adguardhome.sh` script supports the following arguments:
 Update to the latest stable release:
 
 ```bash
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh
+wget -q https://app.gl-i.net/adguard -O update-adguardhome.sh && sh update-adguardhome.sh
 ```
 
 ### Select a Specific Version
@@ -100,7 +100,7 @@ wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adgua
 Install a specific AdGuard Home version:
 
 ```bash
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --select-release
+wget -q https://app.gl-i.net/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --select-release
 ```
 
 The script will display available releases for you to choose from.
@@ -110,7 +110,7 @@ The script will display available releases for you to choose from.
 Install the latest AdGuard Home prerelease:
 
 ```bash
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --testing
+wget -q https://app.gl-i.net/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --testing
 ```
 
 > **⚠️ Warning:** Beta software. A broken AdGuard Home takes DNS down for your whole network. So far the betas have only been tested on the GL.iNet Flint 4 (GL-BE14000), but a build is provided for every supported architecture.
@@ -122,7 +122,7 @@ To go back, run the script without any flag - it always installs the latest stab
 Return to the AdGuard Home version that came with your firmware:
 
 ```bash
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --restore
+wget -q https://app.gl-i.net/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --restore
 ```
 
 ### Unattended Updates
@@ -130,7 +130,7 @@ wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adgua
 Run without any prompts:
 
 ```bash
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --force
+wget -q https://app.gl-i.net/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --force
 ```
 
 > **ℹ️ Note:** `--force` keeps the query log in RAM, leaves the DNS routing as it is and makes the installation permanent.
@@ -140,7 +140,7 @@ wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adgua
 For devices with limited free space (⚠️ use with caution):
 
 ```bash
-wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --ignore-free-space
+wget -q https://app.gl-i.net/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --ignore-free-space
 ```
 
 > **⚠️ Warning:** This disables safety checks and backup creation. Could potentially break your router if there's not enough free space!

@@ -8,9 +8,9 @@
 # Description: This script updates AdGuardHome to the latest version.
 # Thread: https://forum.gl-inet.com/t/how-to-update-adguard-home-testing/39398
 # Author: Admon
-SCRIPT_VERSION="2026.10.07.03"
+SCRIPT_VERSION="2026.10.08.01"
 SCRIPT_NAME="update-adguardhome.sh"
-UPDATE_URL="https://get.admon.me/adguard-update"
+UPDATE_URL="https://app.gl-i.net/adguard-update"
 #
 # Usage: ./update-adguardhome.sh [--ignore-free-space] [--select-release] [--testing]
 #                                [--restore] [--force] [--force-upgrade] [--log] [--help]

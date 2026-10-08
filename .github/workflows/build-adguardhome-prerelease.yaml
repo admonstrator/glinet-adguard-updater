@@ -338,7 +338,7 @@ jobs:
             To install it, run the update script with the `--testing` flag:
 
             ```bash
-            wget -q https://get.admon.me/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --testing
+            wget -q https://app.gl-i.net/adguard -O update-adguardhome.sh && sh update-adguardhome.sh --testing
             ```
 
             To go back, run the script without any flag (installs the latest stable
