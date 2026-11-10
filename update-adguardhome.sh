@@ -8,7 +8,7 @@
 # Description: This script updates AdGuardHome to the latest version.
 # Thread: https://forum.gl-inet.com/t/how-to-update-adguard-home-testing/39398
 # Author: Admon
-SCRIPT_VERSION="2026.10.08.01"
+SCRIPT_VERSION="2026.11.10.01"
 SCRIPT_NAME="update-adguardhome.sh"
 UPDATE_URL="https://app.gl-i.net/adguard-update"
 #
@@ -189,11 +189,46 @@ verify_sha256() {
     return 0
 }
 
+http_download() {
+    # $1 = url, $2 = target path. Tries curl first, then wget, because some
+    # firmwares ship only one of them. curl is preferred: on OpenWrt 25.x
+    # uclient-fetch (wget) stalls on github.com responses whose header lines
+    # are longer than 4 KB. Partial files are removed on failure.
+    rm -f "$2"
+    if command -v curl >/dev/null; then
+        # -f matters: without it a 404 page is happily stored as a "binary"
+        if curl -fL -s --retry 3 --connect-timeout 20 --speed-limit 1 --speed-time 30 -o "$2" "$1"; then
+            return 0
+        fi
+        rm -f "$2"
+        command -v wget >/dev/null && log "WARNING" "curl failed for $1, retrying with wget" >&2
+    fi
+    if command -v wget >/dev/null; then
+        if wget -q -T 30 -O "$2" "$1"; then
+            return 0
+        fi
+        rm -f "$2"
+        command -v curl >/dev/null || log "WARNING" "wget failed for $1 (installing curl may help)" >&2
+    fi
+    return 1
+}
+
+http_get() {
+    # $1 = url. Prints the body to stdout. Buffered through a temp file so a
+    # failed curl attempt never leaves partial output before the wget retry
+    local tmp="/tmp/.http_get.$$"
+    if http_download "$1" "$tmp"; then
+        cat "$tmp"
+        rm -f "$tmp"
+        return 0
+    fi
+    return 1
+}
+
 download_and_verify() {
     # $1 = base url, $2 = asset name, $3 = target path
     log "INFO" "Downloading $2 ..."
-    # -f matters: without it a 404 page is happily stored as a "binary"
-    if ! curl -fL -s --retry 3 --connect-timeout 20 -o "$3" "$1/$2"; then
+    if ! http_download "$1/$2" "$3"; then
         log "ERROR" "Download of $2 failed. Please check your internet connection."
         rm -f "$3"
         return 1
@@ -207,7 +242,7 @@ download_and_verify() {
         log "WARNING" "sha256sum is not available, skipping the checksum verification."
         return 0
     fi
-    if ! curl -fL -s --retry 3 --connect-timeout 20 -o "$TEMP_CHECKSUMS" "$1/checksums.txt"; then
+    if ! http_download "$1/checksums.txt" "$TEMP_CHECKSUMS"; then
         log "WARNING" "Could not download checksums.txt, skipping the checksum verification."
         rm -f "$TEMP_CHECKSUMS"
         return 0
@@ -313,10 +348,13 @@ preflight_check() {
         log "SUCCESS" "Available space: $available_space MB"
     fi
 
+    # curl or wget, one of them is enough
     if command -v curl >/dev/null; then
         log "SUCCESS" "curl is installed."
+    elif command -v wget >/dev/null; then
+        log "SUCCESS" "wget is installed."
     else
-        log "ERROR" "curl is not installed."
+        log "ERROR" "Neither curl nor wget is installed."
         preflight=1
     fi
 
@@ -366,7 +404,7 @@ backup() {
 
 get_target_version() {
     log "INFO" "Detecting the available AdGuard Home version ($CHANNEL_NAME) ..."
-    AGH_VERSION_NEW=$(curl -fL -s --retry 3 --connect-timeout 20 "$AGH_TINY_URL/version.txt" | tr -d '[:space:]')
+    AGH_VERSION_NEW=$(http_get "$AGH_TINY_URL/version.txt" | tr -d '[:space:]')
     if [ -z "$AGH_VERSION_NEW" ]; then
         log "ERROR" "Could not get the AdGuard Home version of the $CHANNEL_NAME channel."
         log "ERROR" "Please check your internet connection."
@@ -904,7 +942,7 @@ choose_release_label() {
     # every beta tag (vX.Y.Z-b.N), so a testing build can never be installed by
     # accident through this menu.
     available_labels=$(
-        curl -fL -s --retry 3 --connect-timeout 20 "https://api.github.com/repos/$AGH_REPO/releases?per_page=30" \
+        http_get "https://api.github.com/repos/$AGH_REPO/releases?per_page=30" \
         | grep -o '"tag_name": "[^"]*"' | cut -d'"' -f4 \
         | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'
     )
@@ -967,7 +1005,7 @@ invoke_update() {
 
     log "INFO" "Checking for script updates"
     script_version_new=$(
-        curl -fL -s --retry 3 --connect-timeout 20 "$UPDATE_URL" \
+        http_get "$UPDATE_URL" \
         | grep -o 'SCRIPT_VERSION="[0-9]\{4\}\.[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}"' \
         | cut -d '"' -f 2
     )
@@ -982,7 +1020,7 @@ invoke_update() {
 
     log "WARNING" "A new version of the script is available: $script_version_new"
     log "INFO" "Updating the script ..."
-    if ! curl -fL -s --retry 3 --connect-timeout 20 -o "/tmp/$SCRIPT_NAME" "$UPDATE_URL"; then
+    if ! http_download "$UPDATE_URL" "/tmp/$SCRIPT_NAME"; then
         log "WARNING" "Could not download the new version, continuing with $SCRIPT_VERSION."
         rm -f "/tmp/$SCRIPT_NAME"
         return 0
