@@ -331,6 +331,41 @@ else
     fail "install_agh: did not restore the previous binary: $(agh_version "$AGH_BIN")"
 fi
 
+# 5) Moving the binary onto the flash fails half way (flash full) -> the
+#    truncated file must not stay, the previous binary comes back
+FAKE_RUNNING="never"
+setup_install "v0.107.79" "v0.107.80"
+mv() {
+    if [ "$1" = "$TEMP_FILE" ]; then
+        head -c 10 "$1" > "$2"
+        return 1
+    fi
+    command mv "$@"
+}
+if ( install_agh >/dev/null 2>&1 ); then
+    fail "install_agh: reported success although the binary could not be moved"
+elif [ "$(agh_version "$AGH_BIN")" = "v0.107.79" ] && [ ! -f "$TEMP_FILE" ]; then
+    pass "install_agh: rolls back when moving the binary onto the flash fails"
+else
+    fail "install_agh: wrong state after a failed move: $(agh_version "$AGH_BIN")"
+fi
+
+# 6) Same, but there is no previous binary -> nothing broken is left behind,
+#    and the user is pointed to --restore
+setup_install "v0.107.79" "v0.107.80"
+command rm -f "$AGH_BIN"
+# log is muted above, so print the messages for this case only
+out=$(
+    log() { printf '%s\n' "$2"; }
+    (install_agh) 2>&1
+)
+if [ ! -e "$AGH_BIN" ] && echo "$out" | grep -q -- "--restore"; then
+    pass "install_agh: removes a truncated binary and points to --restore"
+else
+    fail "install_agh: left $AGH_BIN behind or gave no --restore hint: $out"
+fi
+unset -f mv
+
 # restart_and_verify on its own: a process that is gone again is not a success
 FAKE_RUNNING="never"
 if restart_and_verify >/dev/null 2>&1; then

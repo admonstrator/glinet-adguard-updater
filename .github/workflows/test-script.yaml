@@ -52,6 +52,7 @@ jobs:
         run: |
           ${{ matrix.shell }} -n update-adguardhome.sh
           ${{ matrix.shell }} -n tests/test-functions.sh
+          ${{ matrix.shell }} -n tests/test-self-update.sh
 
   flag-tests:
     name: Flag Parsing Tests
@@ -142,3 +143,22 @@ jobs:
         # verify that a 404 fails and that --select-release never offers a
         # prerelease.
         run: sh tests/test-functions.sh update-adguardhome.sh
+
+  self-update-tests:
+    name: Self-Update Robustness Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Run self-update tests under BusyBox ash
+        # alpine runs the script with BusyBox ash and coreutils like on the
+        # router. /flash is a 1 MB tmpfs that gets filled up to stand in for a
+        # full flash. Downloads are served from local files, and the update
+        # that succeeds is a harmless stand-in script, never the real one.
+        run: |
+          docker run --rm \
+            -v "$PWD:/src:ro" \
+            --tmpfs /flash:size=1m \
+            -e FLASH_DIR=/flash \
+            -w /src alpine:3.20 sh tests/test-self-update.sh update-adguardhome.sh
