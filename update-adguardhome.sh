@@ -8,7 +8,7 @@
 # Description: This script updates AdGuardHome to the latest version.
 # Thread: https://forum.gl-inet.com/t/how-to-update-adguard-home-testing/39398
 # Author: Admon
-SCRIPT_VERSION="2026.11.10.01"
+SCRIPT_VERSION="2026.11.22.01"
 SCRIPT_NAME="update-adguardhome.sh"
 UPDATE_URL="https://app.gl-i.net/adguard-update"
 #
@@ -583,12 +583,17 @@ install_agh() {
         log "ERROR" "Nothing has been changed on your router."
         exit 1
     fi
-    if ! mv "$TEMP_FILE" "$AGH_BIN"; then
-        log "ERROR" "Could not install the new binary."
-        rollback_binary
+    # /tmp is RAM and $AGH_BIN is on flash, so this is a copy that can fail
+    # half way (flash full) and leave a truncated binary behind. Never start
+    # that: roll back, and point to --restore if even that fails.
+    if ! mv "$TEMP_FILE" "$AGH_BIN" || ! chmod +x "$AGH_BIN"; then
+        log "ERROR" "Could not install the new binary (flash full?)."
+        rm -f "$TEMP_FILE" "$AGH_BIN"
+        if ! rollback_binary; then
+            log "ERROR" "Run this script with --restore to bring back the firmware version."
+        fi
         exit 1
     fi
-    chmod +x "$AGH_BIN"
 
     enable_querylog
     # Must run before disable_multipath_tcp, as restoring copies the stock init script
@@ -999,36 +1004,66 @@ enable_testing_channel() {
 # Main Execution Flow
 # ==============================================================================
 
+is_valid_script() {
+    # Rejects truncated downloads and error pages before they replace the
+    # running script: shebang, entry point at the end, and valid sh syntax
+    [ -s "$1" ] || return 1
+    [ "$(head -n 1 "$1")" = "#!/bin/sh" ] || return 1
+    grep -q '^main "\$@"' "$1" || return 1
+    sh -n "$1" 2>/dev/null || return 1
+    return 0
+}
+
 invoke_update() {
     local script_version_new
     local script_path
+    # Download once and take the version from the very file that gets
+    # installed, so the check and the install can never see different files
+    local new_script="/tmp/$SCRIPT_NAME"
 
     log "INFO" "Checking for script updates"
-    script_version_new=$(
-        http_get "$UPDATE_URL" \
-        | grep -o 'SCRIPT_VERSION="[0-9]\{4\}\.[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}"' \
-        | cut -d '"' -f 2
-    )
-    if [ -z "$script_version_new" ]; then
-        log "WARNING" "Could not retrieve the script version, skipping the update check."
+    # http_download only returns success for a complete transfer and removes
+    # partial files, -s also catches an empty body
+    if ! http_download "$UPDATE_URL" "$new_script" || [ ! -s "$new_script" ]; then
+        log "WARNING" "Could not check for script updates, continuing with $SCRIPT_VERSION."
+        rm -f "$new_script"
         return 0
     fi
+    script_version_new=$(
+        grep -o 'SCRIPT_VERSION="[0-9]\{4\}\.[0-9]\{2\}\.[0-9]\{2\}\.[0-9]\{2\}"' "$new_script" \
+        | head -n 1 | cut -d '"' -f 2
+    )
+    if [ -z "$script_version_new" ]; then
+        log "WARNING" "The downloaded update does not look like this script, continuing with $SCRIPT_VERSION."
+        rm -f "$new_script"
+        return 0
+    fi
+    # Any different version is installed, so a pulled release can be rolled
+    # back by publishing the previous script again
     if [ "$script_version_new" = "$SCRIPT_VERSION" ]; then
+        rm -f "$new_script"
         log "SUCCESS" "The script is up to date"
         return 0
     fi
 
     log "WARNING" "A new version of the script is available: $script_version_new"
     log "INFO" "Updating the script ..."
-    if ! http_download "$UPDATE_URL" "/tmp/$SCRIPT_NAME"; then
-        log "WARNING" "Could not download the new version, continuing with $SCRIPT_VERSION."
-        rm -f "/tmp/$SCRIPT_NAME"
+    if ! is_valid_script "$new_script"; then
+        log "ERROR" "The downloaded script is incomplete or damaged, continuing with $SCRIPT_VERSION."
+        rm -f "$new_script"
         return 0
     fi
     script_path=$(readlink -f "$0")
-    rm -f "$script_path"
-    mv "/tmp/$SCRIPT_NAME" "$script_path"
-    chmod +x "$script_path"
+    # Copy next to the current script first. /tmp is RAM and the script lives
+    # on flash, so a full flash must fail here, while the old script is still
+    # in place. The final mv is a rename on the same filesystem.
+    if ! cp "$new_script" "$script_path.new" || ! chmod +x "$script_path.new" ||
+        ! mv -f "$script_path.new" "$script_path"; then
+        log "ERROR" "Could not replace $script_path (flash full?), continuing with $SCRIPT_VERSION."
+        rm -f "$script_path.new" "$new_script"
+        return 0
+    fi
+    rm -f "$new_script"
     log "INFO" "The script has been updated. It will now restart ..."
     sleep 3
     # "$@" still holds every flag: parse_arguments does not consume them
